@@ -5,7 +5,6 @@
 #include <pthread.h>
 #include <stdbool.h>
 #include <ctype.h>
-#include<conio.h>
 
 #define QUANTIDADE_USUARIOS 3
 #define APTO 1
@@ -43,41 +42,50 @@ FILA *processosSuspensos = NULL;
 USUARIO usuario[QUANTIDADE_USUARIOS];
 int indiceThread[QUANTIDADE_USUARIOS];
 int idProcesso = 0;
-int idEmImpressao;
-bool fim;
+int idEmImpressao = 0;
+bool fim = false;
 
 pthread_t thread_usuario[QUANTIDADE_USUARIOS];
 pthread_t thread_impressora;
 pthread_t thread_interface;
 
-void createThreads();
-void joinThreads();
+pthread_mutex_t mutex;
+pthread_mutex_t mutexSuspensos;
+pthread_mutex_t mutexImpressora;
+
 void *acaoImpressora();
 void *acaoUsuario(void *posicao);
-bool adicionarNaFila(FILA *fila, PROCESSO *novoNodo);
+void adicionarNaFila(FILA *fila, PROCESSO *novoNodo);
+void removerDaFila(FILA *fila, int id);
+bool modificarFilaImpressora(int operacao, PROCESSO *nodo);
+bool modificarFilaSuspensos(int operacao, PROCESSO *nodo);
 void consumirNodo(FILA *fila);
 void exibirFila();
-FILA buscarProcesso(FILA *fila, int id);
-void removerProcesso(FILA *fila, int id);
-void suspenderImpressao(FILA *fila, int id);
-void suspenderImpressao();
-void visualizarImpressora();
+void removerProcesso(FILA *fila);
+void suspenderImpressao(FILA *fila);
+void habilitarImpressao(FILA *fila);
 void *menu();
 void inicializarUsuarios();
+void inicializarFilas();
+void exibirSaidas();
 
 int main(){	
 	fim = false;
 	inicializarUsuarios();
+	inicializarFilas();
 	
 	pthread_t thread_usuario[QUANTIDADE_USUARIOS];
 	pthread_t thread_impressora;
 	pthread_t thread_controle;
 	
+	pthread_mutex_init(&mutex, NULL);
+	pthread_mutex_init(&mutexImpressora, NULL);
+	pthread_mutex_init(&mutexSuspensos, NULL);
+	
 	void *thread_result;
 	
-	(void)pthread_create(&thread_controle, NULL, menu, 0); //pesquisar sobre o quarto parâmetro
+	(void)pthread_create(&thread_controle, NULL, menu, 0);
 	(void)pthread_create(&thread_impressora, NULL, acaoImpressora, 0);
-	
 	for(int i = 0; i<QUANTIDADE_USUARIOS; i++){
 		indiceThread[i] = i;
 		(void)pthread_create(&thread_usuario[i], NULL, acaoUsuario, &indiceThread[i]);
@@ -95,18 +103,21 @@ int main(){
 
 void *acaoImpressora(){
 	while(!fim){
-		if(filaImpressora->tamanho>0){
-			PROCESSO *processoAtual = filaImpressora;
+		if(filaImpressora->tamanhoFila>0){
+			PROCESSO *processoAtual = filaImpressora->inicio;
 			idEmImpressao = processoAtual->id;
 			int tamanho = processoAtual->paginas;
 		
-			for(int i = 0; i<tamanho; i++){
-				printf("Imprimindo processo #%d. Página %d de %d. \n", processoAtual->id, (i+1), tamanho);
+			for(int i = 0; i<tamanho & processoAtual->status==APTO; i++){
+				//printf("Imprimindo processo #%d do usuário %d. Página %d de %d. \n", processoAtual->id, processoAtual->remetente, (i+1), tamanho);
+				sleep(1);
 			}
 		
-			printf("\nProcesso #%d impresso com sucesso! \n\n", processoAtual->id);
-			consumirNodo();
-			usleep(3);
+			//printf("\n Processo #%d impresso com sucesso! \n\n", processoAtual->id);
+			
+			consumirNodo(filaImpressora);
+		}else{
+			//printf("Aguardando novos processos...\n\n");
 		}
 	}
 	pthread_exit(0);
@@ -114,93 +125,108 @@ void *acaoImpressora(){
 
 void *acaoUsuario(void *posicao){
 	int num = *(int*) posicao;
-	int tempo = usuario[num]->frequencia;
+	int tempo = usuario[num].frequencia;
 	
 	while(!fim){
 		PROCESSO *novoNodo = (PROCESSO*)malloc(sizeof(PROCESSO));
-		novoNodo->id = idProcesso++;
+		novoNodo->id = -1;
+		novoNodo->status = APTO;
 		novoNodo->remetente = num;
 		novoNodo->paginas = rand()%10;
 		bool enviado = false;
 		while(!enviado){
-			enviado = adicionarFilaImpressora(usuario[num].filaProcessos, novoNodo, usuario[num]->filaProcessos->tamanhoFila);
+			enviado = modificarFilaImpressora(ADICIONAR, novoNodo);
 		}
-		usleep(tempo);
+		usleep(tempo*1000000);
 	}
 	pthread_exit(0);
 }
 
 void adicionarNaFila(FILA *fila, PROCESSO *novoNodo){
-	PROCESSO *ultimoNodo = fila->fim->anterior;
+	PROCESSO *ultimoNodo = fila->fim;
+	if(novoNodo->id==-1){
+		idProcesso++;
+		novoNodo->id = idProcesso;
+	}	
 	if(fila->tamanhoFila==0){
+		novoNodo->anterior = NULL;
+		novoNodo->proximo = NULL;
 		fila->inicio = novoNodo;
 		fila->fim = novoNodo;
 	}else{			
 		ultimoNodo->proximo = novoNodo;
 		novoNodo->anterior = ultimoNodo;
-		novoNodo->proximo = ultimo->proximo;
+		novoNodo->proximo = NULL;
+		fila->fim = novoNodo;
 	}
 	fila->tamanhoFila++;
 }
 
 void removerDaFila(FILA *fila, int id){
 	bool removido = false;
-	PROCESSO *processo = buscarProcesso(filaImpressora, id);
-	if(processo!=NULL){
+	
+	PROCESSO *processo = fila->inicio;
+	bool encontrado = false;
+    while(processo!=NULL & !encontrado){
+        if(processo->id==id){
+            encontrado = true;
+        }else{
+	        processo = processo->proximo;
+	    }
+    }
+	
+	if(encontrado){
 		processo->anterior->proximo = processo->proximo;
-        processo->proxmio->anterior = processo->anterior;
+        processo->proximo->anterior = processo->anterior;
 		removido = true;
 	}
 }
 
-bool modificarFilaImpressora(int operacao, FILA *fila, PROCESSO *novoNodo){
+bool modificarFilaImpressora(int operacao, PROCESSO *nodo){
 	if(operacao==ADICIONAR){	
 		bool enviado = false;
-		pthread_mutex_lock(&mutex);
-		adicionarNaFila(filaImpressora, novoProcesso);
+		pthread_mutex_lock(&mutexImpressora);
+		adicionarNaFila(filaImpressora, nodo);
 		enviado = true;
-		pthread_mutex_unlock(&mutex);
-	
+		pthread_mutex_unlock(&mutexImpressora);
 		return enviado;
 	}else{
 		bool removido = false;
-		pthread_mutex_lock(&mutex);
-		adicionarNaFila(filaImpressora, novoProcesso);
+		pthread_mutex_lock(&mutexImpressora);
+		removerProcesso(filaImpressora);
 		removido = true;
-		pthread_mutex_unlock(&mutex);
+		pthread_mutex_unlock(&mutexImpressora);
 	
 	return removido;
 	}
 }
 
-bool modificarFilaSuspensos(FILA *fila, PROCESSO *novoNodo){
+bool modificarFilaSuspensos(int operacao, PROCESSO *nodo){
 	if(operacao==ADICIONAR){
 		bool enviado = false;
-		pthread_mutex_lock(&mutex);
-		adicionarNaFila(filaSuspensos, novoProcesso);
+		pthread_mutex_lock(&mutexSuspensos);
+		suspenderImpressao(processosSuspensos);
 		enviado = true;
-		pthread_mutex_unlock(&mutex);
-	
+		pthread_mutex_unlock(&mutexSuspensos);
+		adicionarNaFila(processosSuspensos, nodo);
 		return enviado;
 	}else{
 		bool removido = false;
-		pthread_mutex_lock(&mutex);
-		adicionarNaFila(filaImpressora, novoProcesso);
+		pthread_mutex_lock(&mutexSuspensos);	
+		suspenderImpressao(processosSuspensos);
 		removido = true;
-		pthread_mutex_unlock(&mutex);
+		pthread_mutex_unlock(&mutexSuspensos);
 	
-	return removido;
+		return removido;
 	}
 }
 
 void consumirNodo(FILA *fila){
-	if(fila->tamanhoFila>0){
-		consumido = fila->inicio;
-		novoInicio = consumido->proximo;
-		novoInicio->anterior = consumido->anterior;
-		fila->inicio = novoInicio;
-		fila->tamanhoFila--;			
-	}	
+	PROCESSO *consumido = fila->inicio;
+	PROCESSO *novoInicio = consumido->proximo;
+	novoInicio->anterior = NULL;
+	fila->inicio = novoInicio;
+	fila->tamanhoFila--;
 }
 
 void exibirFila(){
@@ -208,91 +234,106 @@ void exibirFila(){
 	char resposta = ' ';
 	printf("--- FILA PARA IMPRESSÃO ---\n");
 	while(!sair){
-		PROCESSO *nodoAtual = filaImpressora;
+		PROCESSO *nodoAtual = filaImpressora->inicio;
 		if(filaImpressora->tamanhoFila==0){
 		    printf("Nenhum processo está aguardando impressão.");
 		}else{
-		    printf("- Processo #%d - ", nodoAtual->id);  
-		    nodoAtual = nodoAtual->proximo;
+			while(nodoAtual!=NULL){
+				printf("- Processo #%d - Usuário: %d \n", nodoAtual->id, nodoAtual->remetente);  
+				nodoAtual = nodoAtual->proximo;
+			}
 		}
 		printf("\nDigite X para voltar ao menu.\n");
 		
-		if(kbhit()){
-	        char resposta = getch();
-	        resposta = toupper(resposta);
-	        if(resposta=='X'){
-	        	sair = true;
-	        }
-	    }
+		scanf(" %c", &resposta);
+		resposta = toupper(resposta);
+		if(resposta == 'X'){
+			sair = true;
+		}		
+		system("clear");
 	}
-}
-
-PROCESSO buscarProcesso(FILA *fila, int id){
-	bool encontrado = false;
-	PROCESSO *nodoAtual = fila->inicio;
-    while(nodoAtual!=NULL & !encontrado){
-        if(nodoAtual->id==idProcesso){
-            encontrado = true;
-        }else{
-	        nodoAtual = nodoAtual->proximo;
-	    }
-    }
-    
-    return nodoAtual;
 }
 
 void removerProcesso(FILA *fila){
 	int id;
 	printf("ID do processo a ser removido da fila: ");
-	scanf("%d", id);
+	scanf("%d", &id);
 	
-	PROCESSO *processo = buscarProcesso(filaImpressora, id);
-	if(processo!=NULL){
+	PROCESSO *processo = fila->inicio;
+	bool encontrado = false;
+    while(processo!=NULL & !encontrado){
+        if(processo->id==id){
+            encontrado = true;
+        }else{
+	        processo = processo->proximo;
+	    }
+    }
+	
+	if(encontrado){
 		processo->anterior->proximo = processo->proximo;
-        processo->proxmio->anterior = processo->anterior;
-   		printf("O processo #%d foi removido da fila para impressão.\n");
+        processo->proximo->anterior = processo->anterior;
+   		printf("O processo #%d foi removido da fila para impressão.\n", id);
 	}else{
-		printf("O processo #%d não está na fila para impressão.\n");
+		printf("O processo #%d não está na fila para impressão.\n", id);
 	}
 }
 
-void suspenderImpressao(FILA *fila, int id){
+void suspenderImpressao(FILA *fila){
 	int id;
 	printf("ID do processo a ser suspenso da fila: ");
-	scanf("%d", id);
+	scanf("%d", &id);
 		
-	PROCESSO *processo = buscarProcesso(fila, id);
-	if(processo!=NULL){
-		processo->anterior->proximo = processo->proximo;
-        processo->proxmio->anterior = processo->anterior;
+	PROCESSO *processo = fila->inicio;
+	bool encontrado = false;
+    while(processo!=NULL & !encontrado){
+        if(processo->id==id){
+            encontrado = true;
+        }else{
+	        processo = processo->proximo;
+	    }
+    }
+	
+	if(encontrado){
+		removerDaFila(filaImpressora, processo->id);
         bool enviado = false;
         printf("\n Aguarde... \n");
         while(!enviado){
-	        enviado = adicionarFilaSuspensos(filaSuspensos, processo);
+	        enviado = modificarFilaSuspensos(ADICIONAR, processo);
         }
-   		printf("O processo #%d foi suspenso.\n");
+        processo->status = SUSPENSO;
+   		printf("O processo #%d foi suspenso.\n", id);
 	}else{
-		printf("O processo #%d não está na fila para impressão.\n");
+		printf("O processo #%d não está na fila para impressão.\n", id);
 	}
 }
 
-void habilitarImpressao(FILA *fila, int id){
+void habilitarImpressao(FILA *fila){
 	int id;
 	printf("ID do processo a ser habilitado: ");
-	scanf("%d", id);
-		
-	PROCESSO *processo = buscarProcesso();
-	if(processo!=NULL){
+	scanf("%d", &id);
+	
+	PROCESSO *processo = fila->inicio;
+	bool encontrado = false;
+    while(processo!=NULL & !encontrado){
+        if(processo->id==id){
+            encontrado = true;
+        }else{
+	        processo = processo->proximo;
+	    }
+    }
+    
+	if(encontrado){
 		processo->anterior->proximo = processo->proximo;
-        processo->proxmio->anterior = processo->anterior;
+        processo->proximo->anterior = processo->anterior;
         bool enviado = false;
         printf("\n Aguarde... \n");
         while(!enviado){
-	        enviado = adicionarFilaImpressora(filaImpressora, processo);
+	        enviado = modificarFilaImpressora(ADICIONAR, processo);
         }
-   		printf("O processo #%d foi habilitado.\n");
+        processo->status = APTO;
+   		printf("O processo #%d foi habilitado.\n", id);
 	}else{
-		printf("O processo #%d não está suspenso.\n");
+		printf("O processo #%d não está suspenso.\n", id);
 	}
 }
 
@@ -300,37 +341,40 @@ void *menu(){
 	char opcao = ' ';
 
 	while(!fim){
-		printf("IMPRESSORA - MENU \n");
+		printf("\n\nIMPRESSORA - MENU \n");
 		printf("(E) Exibir fila \n");
 		printf("(R) Remover um processo da fila \n");
 		printf("(S) Suspender impressão \n");
 		printf("(H) Habilitar impressão suspensa \n");
-		printf("(D)	Desligar a impressora \n");
+		printf("(O) Exibir saidas \n");
 	
 		printf("Selecione uma opção válida: ");
 		scanf("%c", &opcao);
-		//comando de limpar a tela
+		system("clear");
 		opcao = toupper(opcao);
 		switch(opcao){
 			case 'E':
 				exibirFila();
+				system("clear");
 				break;
 			case 'R':
-				
+				removerProcesso(filaImpressora);
+				system("clear");
 				break;
 			case 'S':
-				suspenderImpressao();
+				suspenderImpressao(processosSuspensos);
+				system("clear");
 				break;
-			case 'S':
-				habilitarImpressao();
+			case 'H':
+				habilitarImpressao(filaImpressora);
+				system("clear");
 				break;
-			case 'D':
-				fim = true;
-				printf("\n			A impressora está sendo desligada.\n");
-				sleep(1);
+			case 'O':
+				exibirSaidas();
 				break;
 			default:
 				opcao = ' ';
+				system("clear");
 				break;
 		}
 		printf("\n");
@@ -341,9 +385,34 @@ void *menu(){
 void inicializarUsuarios(){
 	for(int i = 0; i<QUANTIDADE_USUARIOS; i++){
 		usuario[i].id = i;
-		usuario[i].nome = "User %d", i;
-		usuario[i].frequencia = rand%3;
+		strcpy(usuario[i].nome, "User");
+		usuario[i].frequencia = rand()%3+1;
 		usuario[i].filaProcessos = NULL;
-		usuario[i].tamanhoFila = 0;
 	}
+}
+
+void inicializarFilas(){
+	FILA *novaFila = (FILA*)malloc(sizeof(FILA));
+	novaFila->inicio = NULL;
+	novaFila->fim = NULL;
+	novaFila->tamanhoFila = 0;
+	filaImpressora = novaFila;
+	
+	FILA *novaFila2 = (FILA*)malloc(sizeof(FILA));
+	novaFila2->inicio = NULL;
+	novaFila2->fim = NULL;
+	novaFila2->tamanhoFila = 0;
+	processosSuspensos = novaFila2;
+}
+
+void exibirSaidas(){
+	PROCESSO *processoAtual = filaImpressora->inicio;
+	int tamanho = processoAtual->paginas;
+
+	for(int i = 0; i<tamanho & processoAtual->status==APTO; i++){
+		printf("Imprimindo processo #%d do usuário %d. Página %d de %d. \n", processoAtual->id, processoAtual->remetente, (i+1), tamanho);
+		sleep(1);
+	}
+
+	printf("\n Processo #%d impresso com sucesso! \n\n", processoAtual->id);
 }
