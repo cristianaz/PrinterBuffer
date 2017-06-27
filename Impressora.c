@@ -49,7 +49,6 @@ pthread_t thread_usuario[QUANTIDADE_USUARIOS];
 pthread_t thread_impressora;
 pthread_t thread_interface;
 
-pthread_mutex_t mutex;
 pthread_mutex_t mutexSuspensos;
 pthread_mutex_t mutexImpressora;
 
@@ -78,7 +77,6 @@ int main(){
 	pthread_t thread_impressora;
 	pthread_t thread_controle;
 	
-	pthread_mutex_init(&mutex, NULL);
 	pthread_mutex_init(&mutexImpressora, NULL);
 	pthread_mutex_init(&mutexSuspensos, NULL);
 	
@@ -109,15 +107,9 @@ void *acaoImpressora(){
 			int tamanho = processoAtual->paginas;
 		
 			for(int i = 0; i<tamanho & processoAtual->status==APTO; i++){
-				//printf("Imprimindo processo #%d do usuário %d. Página %d de %d. \n", processoAtual->id, processoAtual->remetente, (i+1), tamanho);
 				sleep(1);
-			}
-		
-			//printf("\n Processo #%d impresso com sucesso! \n\n", processoAtual->id);
-			
+			}			
 			consumirNodo(filaImpressora);
-		}else{
-			//printf("Aguardando novos processos...\n\n");
 		}
 	}
 	pthread_exit(0);
@@ -185,18 +177,21 @@ void removerDaFila(FILA *fila, int id){
 bool modificarFilaImpressora(int operacao, PROCESSO *nodo){
 	if(operacao==ADICIONAR){	
 		bool enviado = false;
-		pthread_mutex_lock(&mutexImpressora);
-		adicionarNaFila(filaImpressora, nodo);
-		enviado = true;
-		pthread_mutex_unlock(&mutexImpressora);
+		while(!enviado){
+			pthread_mutex_lock(&mutexImpressora);
+			adicionarNaFila(filaImpressora, nodo);
+			enviado = true;
+			pthread_mutex_unlock(&mutexImpressora);
+		}
 		return enviado;
 	}else{
 		bool removido = false;
-		pthread_mutex_lock(&mutexImpressora);
-		removerProcesso(filaImpressora);
-		removido = true;
-		pthread_mutex_unlock(&mutexImpressora);
-	
+		while(!removido){
+			pthread_mutex_lock(&mutexImpressora);
+			removerProcesso(filaImpressora);
+			removido = true;
+			pthread_mutex_unlock(&mutexImpressora);
+		}
 	return removido;
 	}
 }
@@ -204,19 +199,21 @@ bool modificarFilaImpressora(int operacao, PROCESSO *nodo){
 bool modificarFilaSuspensos(int operacao, PROCESSO *nodo){
 	if(operacao==ADICIONAR){
 		bool enviado = false;
-		pthread_mutex_lock(&mutexSuspensos);
-		suspenderImpressao(processosSuspensos);
-		enviado = true;
-		pthread_mutex_unlock(&mutexSuspensos);
-		adicionarNaFila(processosSuspensos, nodo);
+		while(!enviado){
+			pthread_mutex_lock(&mutexSuspensos);
+			adicionarNaFila(processosSuspensos, nodo);
+			enviado = true;
+			pthread_mutex_unlock(&mutexSuspensos);
+		}
 		return enviado;
 	}else{
 		bool removido = false;
-		pthread_mutex_lock(&mutexSuspensos);	
-		suspenderImpressao(processosSuspensos);
-		removido = true;
-		pthread_mutex_unlock(&mutexSuspensos);
-	
+		while(!removido){
+			pthread_mutex_lock(&mutexImpressora);	
+			adicionarNaFila(filaImpressora, nodo);
+			removido = true;
+			pthread_mutex_unlock(&mutexImpressora);
+		}
 		return removido;
 	}
 }
@@ -294,7 +291,7 @@ void suspenderImpressao(FILA *fila){
     }
 	
 	if(encontrado){
-		removerDaFila(filaImpressora, processo->id);
+		modificarFilaImpressora(REMOVER, processo);
         bool enviado = false;
         printf("\n Aguarde... \n");
         while(!enviado){
@@ -328,7 +325,7 @@ void habilitarImpressao(FILA *fila){
         bool enviado = false;
         printf("\n Aguarde... \n");
         while(!enviado){
-	        enviado = modificarFilaImpressora(ADICIONAR, processo);
+	        enviado = modificarFilaSuspensos(REMOVER, processo);
         }
         processo->status = APTO;
    		printf("O processo #%d foi habilitado.\n", id);
